@@ -1,0 +1,80 @@
+#!/bin/bash
+
+
+BACKUP_DIR_DEFAULT=/var/backups
+BACKUP_DIR=${1:-$BACKUP_DIR_DEFAULT}
+TODAY=$(date +%Y-%m-%d)
+DATABASES=("db1" "db2" "db3")
+MAIL_TO=admin@example.com
+ERROR_LOG="$BACKUP_DIR/backup_error.log"
+SUCCESS_LOG="$BACKUP_DIR/backup_success.log"
+NUM_BACKUPS_TO_KEEP=7
+ENCRYPT_BACKUPS=true
+REMOTE_SERVERS=("user@remote-server1:/var/backups" "user@remote-server2:/var/backups")
+DB_TYPE="mysql"
+DB_USER="root"
+DB_PASSWORD="password"
+
+if [ ! -d "$BACKUP_DIR" ]; then
+    echo "Creating backup directory $BACKUP_DIR..."
+    mkdir -p "$BACKUP_DIR"
+fi
+
+
+echo "Creating database backups..."
+for db in "${DATABASES[@]}"; do
+    echo "Backing up $db..."
+    if [ "$DB_TYPE" == "mysql" ]; then
+        mysqldump -u $DB_USER -p$DB_PASSWORD "$db" > "$BACKUP_DIR/$db-$TODAY.sql"
+    elif [ "$DB_TYPE" == "postgresql" ]; then
+        pg_dump -U $DB_USER "$db" > "$BACKUP_DIR/$db-$TODAY.sql"
+    elif [ "$DB_TYPE" == "mongodb" ]; then
+        mongodump -d "$db" -o "$BACKUP_DIR/$db-$TODAY"
+        tar -czvf "$BACKUP_DIR/$db-$TODAY.tar.gz" "$BACKUP_DIR/$db-$TODAY"
+        rm -rf "$BACKUP_DIR/$db-$TODAY"
+    else
+        echo "Unsupported database type: $DB_TYPE"
+        exit 1
+    fi
+    if [ $? -ne 0 ]; then
+        echo "Error backing up $db" >> "$ERROR_LOG"
+    else
+        echo "Backup of $db completed successfully" >> "$SUCCESS_LOG"
+    fi
+done
+
+
+echo "Compressing backups..."
+tar -czvf "$BACKUP_DIR/backups-$TODAY.tar.gz" "$BACKUP_DIR"/*.sql
+
+
+if [ "$ENCRYPT_BACKUPS" = true ]; then
+    echo "Encrypting backups..."
+    openssl enc -aes-256-cbc -salt -in "$BACKUP_DIR/backups-$TODAY.tar.gz" -out "$BACKUP_DIR/backups-$TODAY.tar.gz.enc"
+    rm -f "$BACKUP_DIR/backups-$TODAY.tar.gz"
+fi
+
+
+echo "Copying backups to remote servers..."
+for server in "${REMOTE_SERVERS[@]}"; do
+    scp "$BACKUP_DIR/backups-$TODAY.tar.gz.enc" "$server"
+done
+
+
+echo "Removing old backups..."
+find "$BACKUP_DIR" -type f -name "*.sql" -mtime +$NUM_BACKUPS_TO_KEEP -exec rm {} \;
+
+
+echo "Restarting web server..."
+systemctl restart apache2
+
+
+if [ -s "$ERROR_LOG" ]; then
+    SUBJECT="Backup and Restart Failed"
+else
+    SUBJECT="Backup and Restart Complete"
+fi
+echo "Sending email notification..."
+mail -s "$SUBJECT" "$MAIL_TO" < "$SUCCESS_LOG"
+
+echo "Script completed."
