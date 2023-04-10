@@ -1,4 +1,4 @@
-# Automatedtestingbashscripts
+# BackupAce
 This bash  script automates various tasks.
 The features of the  script:
 
